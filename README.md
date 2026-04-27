@@ -20,6 +20,7 @@ Climate change is reshaping vineyard viability across Europe, yet regional regul
 
 Repositories in This Organization
 
+```
 vinDAR/
 ├── .git/
 ├── .gitignore
@@ -34,6 +35,7 @@ vinDAR/
     ├── exploratory_analysis.ipynb
     ├── filename.csv
     └── lidar_improved.png
+```
 
 src - 
   - data_import.py - import file

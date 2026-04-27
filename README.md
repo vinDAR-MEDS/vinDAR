@@ -45,11 +45,7 @@ Climate change is reshaping vineyard viability across Europe, yet regional regul
 
 Repositories in This Organization
 
-<<<<<<< HEAD
-```         
-=======
 ```
->>>>>>> 9f848bc266bbd8343d52c01f1b167b0e223b2efc
 vinDAR/
 ├── .git/
 ├── .gitignore
@@ -111,16 +107,9 @@ This project is released under the MIT License unless otherwise noted in individ
 - Standardized file naming conventions
 - Reproducible code and documented workflows
 - Appropriate licensing and contributor information
+- A walkthrough of directory structure
+- Standardized file naming conventions
+- Reproducible code and documented workflows
+- Appropriate licensing and contributor information
 
-<<<<<<< HEAD
-=======
-A walkthrough of directory structure
-
-Standardized file naming conventions
-
-Reproducible code and documented workflows
-
-Appropriate licensing and contributor information
-
->>>>>>> 9f848bc266bbd8343d52c01f1b167b0e223b2efc
 This organization is structured to support transparency, reproducibility, and long‑term usability for both the client and the broader community.

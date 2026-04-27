@@ -62,23 +62,22 @@ vinDAR/
     └── lidar_improved.png
 ```
 
-```
-src - 
+src:
   - data_import.py - import file 
   - exploratory_analysis.ipynb - main analysis 
   - filename.csv - data 
   - lidar_improved.png - image render
-```
+
 
 Each repository includes its own README describing purpose, structure, and usage.
 
 # Authors and Team
 
 Team Members:
-- Joshua Ferrer‑Lozano 
-- Stephan Kadonoff 
-- Jay Kim 
-- William Mullins
+- [Joshua Ferrer‑Lozano](https://github.com/Awoo56709) 
+- [Stephan Kadonoff](https://github.com/SRKads1998) 
+- [Jay Kim](https://github.com/jwonyk) 
+- [William Mullins](https://github.com/willrmull)
 
 # Client:
 Jean Sauveur-Ay

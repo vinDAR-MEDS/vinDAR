@@ -3,10 +3,12 @@
 README
 
 
-vinDAR: Modeling Vineyard Mortality and Climate Vulnerability Across French Wine Regions
+vinDAR: Assessing the Health of Vinyards Using HD LIDAR Data
 
 Project Description
-This project develops a modeling and data‑integration framework to estimate long‑term vine mortality, evaluate vineyard vulnerability under climate stress, and link these risks to PDO/AOC regulations, grape varieties, and wine‑region characteristics. The workflow combines LiDAR data, ecological modeling models, sensitivity analysis and regulatory data extraction.
+This project develops a modeling and data‑integration framework to estimate long‑term vine mortality. The core contribution of this project is to provide a reproducible, LIDAR-based workflow for detecting missing grapvines at the parcel level. This workflow transforms raw HD LIDAR point clouds into meaningful indicators of vineyard structure, geometry and vine mortality. The analysis combines spatial preprocessing, height filtering, machine learning clustering, frequency detection and gap analyusis to produce parcel-level estimates of missing vines.
+
+The second possible analysis may allow for the evaluations of vineyard vulnerability under climate stress, and enebale the linkage of these risks to PDO/AOC regulations, grape varieties, and wine‑region characteristics. This workflow combines LiDAR data, ecological modeling models, sensitivity analysis and regulatory data extraction.
 
 This is a capstone project for the
 Master of Environmental Data Science at the
@@ -18,8 +20,20 @@ Climate change is reshaping vineyard viability across Europe, yet regional regul
 
 Repositories in This Organization
 
-- vinDAR
-- .github
+vinDAR/
+├── .git/
+├── .gitignore
+├── .Rproj.user/
+├── .Rhistory
+├── LICENSE
+├── README.md
+├── vinDAR.Rproj
+├── nano.30808.save
+└── src/
+    ├── data_import.py
+    ├── exploratory_analysis.ipynb
+    ├── filename.csv
+    └── lidar_improved.png
 
 src - 
   - data_import.py - import file
@@ -39,7 +53,7 @@ Jay Kim
 William Mullins
 
 Client:  
-Jean Ay
+Jean Sauveur-Ay
 
 Faculty Advisor:  
 Andrew Plantinga

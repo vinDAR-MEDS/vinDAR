@@ -8,7 +8,7 @@ vinDAR: Assessing the Health of Vinyards Using HD LIDAR Data
 
 This project develops a modeling and data‑integration framework to estimate long‑term vine mortality. The core contribution of this project is to provide a reproducible, LIDAR-based workflow for detecting missing grapevines at the parcel level. This workflow transforms raw HD LIDAR point clouds into meaningful indicators of vineyard structure, geometry and vine mortality. The analysis combines spatial preprocessing, height filtering, machine learning clustering, frequency detection and gap analyusis to produce parcel-level estimates of missing vines.
 
-The second possible analysis may allow for the evaluations of vineyard vulnerability under climate stress, and enebale the linkage of these risks to PDO/AOC regulations, grape varieties, and wine‑region characteristics. This workflow combines LiDAR data, ecological modeling models, sensitivity analysis and regulatory data extraction.
+The second possible analysis may allow for the evaluations of vineyard vulnerability under climate stress, and enable the linkage of these risks to PDO/AOC regulations, grape varieties, and wine‑region characteristics. This workflow combines LiDAR data, ecological modeling models, sensitivity analysis and regulatory data extraction.
 
 Our team is in the process in creating a reproducible workflow that detects missing vines using LiDAR point clouds, parcel boundaries, and regulatory spacing rules. The workflow integrates:
 

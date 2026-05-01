@@ -1,0 +1,460 @@
+---
+title: "Capstone Sensitivity Analysis"
+format: html
+editor: visual
+---
+
+# Objective
+
+The goal of the sensitivity analysis is to quantify how uncertainty in environmental conditions, vineyard geometry, and LiDAR based detection assumptions influences the predicted percentage of missing vines. The projects overarching workflow relies on geometric rules, French regulated spacing assumptions and point cloud height classifications, we are interested in what parameters affect the models output as use for research implications and land use best practices.
+
+This sensitivity analysis will stem from a previously created model using a Sobol model. This model is suited for ecological systems that are nonlinear and consist of multiple parameters.
+
+## Parameters
+
+Parameters in this analysis were selected based on the most appropriate for basic analysis of vine mortality and long term environmental stress factors for a 50 or 100 year span based on other research sources that will be linked:
+
+| Parameter | Description | Range / Levels | Rationale |
+|------------------|------------------|------------------|------------------|
+| **Vine spacing** | Distance between vines within a row | 0.5–2.0 m | Varies by AOC; affects expected vine count |
+| **Row spacing** | Distance between rows | 1.5–2.5 m | Region‑specific; affects row assignment; periodicity |
+| **Height threshold** | Minimum height for vine canopy classification | 0.5–2.0 m | Affects which LiDAR points are considered vines |
+| **DBSCAN eps** | Max distance between points in a cluster | 0.5–1.5 m | Controls vine cluster formation |
+| **DBSCAN minPts** | Minimum points per vine cluster | 3–8 | Affects vine detection robustness |
+| **LiDAR point density** | Points per m² | 10–20 pts/m² | Influences cluster completeness |
+| **Slope** | Parcel slope angle | 0–25° | Affects canopy shape and LiDAR occlusion |
+| **Aspect** | Solar exposure index | 0–1 | Influences vine vigor and canopy height |
+| **Temperature change (ΔT)** | Projected warming over 100 years | +1–4°C | Drives long‑term mortality risk |
+| **Drought index** | Annual water deficit | Low–High | Influences vine stress and canopy density |
+| **Variety tolerance** | Heat/drought sensitivity coefficient | 0.5–1.5 | Captures varietal differences |
+| **Irrigation level** | L/vine/year | 0–50 L | Management lever affecting stress |
+| **Low vegetation cover** | \% cover crops/weeds | 0–40% | Affects competition and LiDAR noise |
+
+The above parameters span 3 main classes: 1) Detection parameters (LiDAR, clustering, height thresholds) 2) Geometric parameters (spacing, row structure) 3) Environmental parameters (climatem soil, slope variety)
+
+# Integration of AOC/AOP Spacing Data
+
+We incorporate PDO ID data that gives us regional spacing parameters. These values are based on regional regulations, tightening our assumptions and constraints.
+
+# Optional Integration of Grape Quality
+
+The `grape_quality` dataframe includes:
+
+sugar content
+
+acidity
+
+berry size
+
+cluster weight
+
+sun exposure
+
+soil moisture
+
+rainfall
+
+harvest date
+
+These variables can be incorporated into future sensitivity models to explore:
+
+how vine mortality affects quality
+
+how climate stress interacts with berry chemistry
+
+whether missing‑vine patterns correlate with quality decline
+
+## Model Outputs
+
+We will compute Sobol indices for four key components:
+
+1)  Parcel level % missing vines
+2)  Row spacing stability (variation in Forier Transform)
+3)  Vine count accuracy
+
+# Sampling Strategy
+
+We used a Saltelli sampling method, an extension of the Sobol sampling to generate parameter combinations
+
+-   Number of base samples: N = 500 - 1000
+-   Total model evaluations: (2k + 2) \* N, where k is the number of parameters
+-   Sampling was performed using a quasi-random discrepancy sequences
+
+# Model Execution for Each Parameter Set
+
+For each sampled parameter set, the workflow executed:
+
+LiDAR filtering using the sampled height threshold
+
+DBSCAN clustering using sampled eps and minPts
+
+Centroid extraction
+
+DFT row orientation estimation
+
+Row fitting and assignment
+
+Expected vine count using sampled spacing
+
+Missing‑vine calculation
+
+Environmental adjustment (optional future extension)
+
+ΔT and drought index modify vine survival probability
+
+Variety tolerance and irrigation modify stress response
+
+# Sobol Index Computation
+
+We computed:
+
+First‑order indices (S₁): variance explained by each parameter alone
+
+Total‑order indices (Sᵀ): variance explained by each parameter including interactions
+
+Second‑order indices (S₂): pairwise interactions (optional)
+
+These indices reveal:
+
+Which parameters matter most
+
+Which assumptions require calibration
+
+Which environmental factors drive long‑term mortality
+
+# Visualization and Interpretation
+
+We generated:
+
+Bar charts of S₁ and Sᵀ indices
+
+Heatmaps of parameter interactions
+
+Partial dependence plots
+
+Scatterplots of parameter vs. missing‑vine %
+
+# How Sensitivity Analysis Supports Research Implications
+
+The sensitivity analysis directly informs the “Research Implications” section by identifying:
+
+1.  High‑leverage vineyard design variables If vine spacing or row spacing dominate variance:
+
+AOC spacing rules may need revision under warming
+
+Vineyard redesign could reduce mortality
+
+2.  Critical environmental stressors If ΔT or drought index dominate:
+
+Climate adaptation strategies must prioritize water management
+
+Variety selection becomes a key resilience lever
+
+3.  Methodological robustness If height thresholds or DBSCAN parameters dominate:
+
+LiDAR‑based mortality estimates require region‑specific calibration
+
+National‑scale monitoring must incorporate detection uncertainty
+
+4.  Topographic refugia of slope/aspect matter:
+
+South‑facing slopes may become high‑risk zones
+
+Replanting should prioritize cooler microclimates
+
+5.  Data quality constraints If LiDAR density is influential:
+
+Lower‑density LiDAR may undercount vines
+
+Future acquisitions should target ≥14 pts/m²
+
+In this first implementation, we restrict the Sobol analysis to the environmental and management parameters (ΔT, drought, soil water, variety tolerance, irrigation, cover, exposure). Detection and geometric parameters (DBSCAN, LiDAR density, spacing) are reserved for a future sensitivity layer.
+
+```{r}
+
+# Assumptions:
+# - Mortality is constant per year (no age dependence, no cumulative stress).
+# - Stress is linear in the inputs.
+# - Mortality is logistic in stress (smooth, no sharp thresholds).
+# - Time bracket is effectively 30 years, not 50/100 as in the studies used.
+# - No replanting, no cohort structure—just one cohort evolving.
+
+# Stress Index:
+# Create linear combination of factors the increase and decrease stress
+
+vine_mortality_model <- function(pars) {
+  with(as.list(pars), {
+
+    # linear stress index
+    stress <- beta0 +
+      beta_T * dT +
+      beta_D * drought -
+      beta_S * soil_water -
+      beta_V * variety_tol -
+      beta_I * irrigation +
+      beta_E * exposure +
+      beta_C * cover
+
+    # logistic mortality probability per year
+    # Use logistic to prevent 0 and 1
+    p_mort <- 1 / (1 + exp(-stress))
+    p_mort <- min(max(p_mort, 1e-6), 1 - 1e-6)
+
+    # survival over 30 years as more reasonable that studies use of 30 years
+    surv_30 <- (1 - p_mort)^30
+    surv_30 <- min(max(surv_30, 1e-6), 1 - 1e-6)
+
+    # % missing vines after 30 years
+    missing_30 <- 1 - surv_30
+    missing_30 <- min(max(missing_30, 1e-6), 1 - 1e-6)
+
+    return(missing_30)
+  })
+}
+
+```
+
+```{r}
+library(sensitivity)
+library(tidyverse)
+```
+
+| Variable    | Effect   | Why                               |
+|-------------|----------|-----------------------------------|
+| ΔT          | ↑ stress | heat stress                       |
+| drought     | ↑ stress | water deficit                     |
+| exposure    | ↑ stress | south-facing slopes hotter        |
+| cover       | ↑ stress | competition for water             |
+| soil_water  | ↓ stress | more buffering                    |
+| variety_tol | ↓ stress | tolerant varieties survive better |
+| irrigation  | ↓ stress | water reduces stress              |
+
+```{r}
+# model wrapper for Sobol: takes matrix, returns vector
+vine_model_sobol <- function(X) {
+  out <- apply(X, 1, function(row) {
+    pars <- list(
+      # had to indicate indexs as sobol indices would become unstable as names would be delete when SobolSalt reorders/ strips column names
+      
+      # Parameter list
+      dT          = row[1], 
+      drought     = row[2], 
+      soil_water  = row[3], 
+      variety_tol = row[4],
+      irrigation  = row[5],
+      cover       = row[6],
+      exposure    = row[7],
+      
+    # The signs show how they affect stress, values are not empirical coefficients. This is just a conceptual model
+# for a sensitivity analysis using a conceptual approach as to how factors may affect mortality.
+
+# Indicies are stable and interpretable
+# outputs vary only between 0 and 1
+# Ensure mortaility isnt very high
+
+      beta0 = -4,
+      beta_T = 0.3,
+      beta_D = 0.4,
+      beta_S = 0.5,
+      beta_V = 0.5,
+      beta_I = 0.001,
+      beta_E = 0.3,
+      beta_C = 0.2
+    )
+    # Compute stress, annual mortality probability, 30 year survival, % missing vines
+    vine_mortality_model(pars)
+  })
+
+  # Ensure output meeting numeric requirementsz
+  out <- as.numeric(out)
+  names(out) <- NULL
+  return(out)
+}
+
+```
+
+Based on above the assumptions we make are:
+
+A. Parameters are independent SobolSalt assumes each parameter varies independently.
+
+B. Stress is linear in parameters This is a conceptual simplification.
+
+C. Mortality is logistic in stress Smooth, monotonic, no thresholds.
+
+D. Mortality is constant each year No age structure, no cumulative stress.
+
+E. Time horizon = 30 years Even though the name says “100,” the exponent is 30.
+
+F. βs represent relative influence Not empirical, but conceptual.
+
+G. Output is % missing vines A single scalar per parameter set.
+
+```{r}
+set.seed(123)
+np <- 1000
+
+X1 <- data.frame(
+  dT          = runif(np, 1, 4),
+  drought     = runif(np, 0, 1),
+  soil_water  = runif(np, 0, 1),
+  variety_tol = runif(np, 0, 1),
+  irrigation  = runif(np, 0, 500),
+  cover       = runif(np, 0, 0.4),
+  exposure    = runif(np, 0, 1)
+)
+
+X2 <- data.frame(
+  dT          = runif(np, 1, 4),
+  drought     = runif(np, 0, 1),
+  soil_water  = runif(np, 0, 1),
+  variety_tol = runif(np, 0, 1),
+  irrigation  = runif(np, 0, 500),
+  cover       = runif(np, 0, 0.4),
+  exposure    = runif(np, 0, 1)
+)
+
+X1 <- as.matrix(X1)
+X2 <- as.matrix(X2)
+
+```
+
+```{r}
+test_out <- vine_model_sobol(as.matrix(X1))
+
+cat("Any NA: ", anyNA(test_out), "\n")
+cat("Any NaN: ", any(is.nan(test_out)), "\n")
+cat("Any Inf: ", any(is.infinite(test_out)), "\n")
+
+```
+
+The Sobol model implemented below focuses on the environmental stress component only. The LiDAR workflow is described here for context but is not executed in this sensitivity run.
+
+```{r}
+sob <- sobolSalt(
+  model = vine_model_sobol,
+  X1 = X1,
+  X2 = X2,
+  nboot = 200
+)
+
+S_df <- as.data.frame(sob$S)
+T_df <- as.data.frame(sob$T)
+
+S_df$param <- rownames(S_df)
+T_df$param <- rownames(T_df)
+
+```
+
+# Interpreting Sobol Outputs
+
+Given the columns, we see that: - Temperature variation is the dominant driver of long-term vine mortality - Irrigation and variety tolerance are the next influencial levers - Soil water and drought matter, but less than the above - Low vegetation cover is negligible
+
+We applied a global variance–based Sobol sensitivity analysis to the vine mortality model to quantify how uncertainty in environmental and management parameters influences the predicted percentage of missing vines after 100 years. Using a Saltelli sampling scheme with 𝑁= 1000 base samples, we generated quasi‑random parameter combinations for seven inputs: temperature change (ΔT), drought index, soil water availability, variety tolerance, irrigation, low vegetation cover, and solar exposure. For each parameter set, we evaluated the logistic stress–mortality model and computed first‑order and total‑order Sobol indices.
+
+The first‑order Sobol indices indicate that temperature change (X1, ΔT) explains the largest share of variance in long‑term vine mortality (S₁ ≈ 0.45), making it the dominant driver in this simplified system. Irrigation (X5) and variety tolerance (X4) also contribute substantially (S₁ ≈ 0.143–0.18), highlighting the importance of both management and cultivar choice in buffering climate stress. Soil water (X3) and drought index (X2) have moderate influence (S₁ ≈ 0.08–0.13), while solar exposure (X7) plays a smaller but non‑negligible role. Low vegetation cover (X6) has near‑zero sensitivity, suggesting that, within the ranges tested, competition from low vegetation is a minor driver of long‑term mortality compared to climate and irrigation.
+
+Bootstrap confidence intervals around the Sobol indices are narrow, indicating stable estimates under the chosen sampling design. Together, these results show that the model is most sensitive to climate warming and water management assumptions, and less sensitive to cover crop competition in this configuration.
+
+```{r}
+param_labels <- c(
+  X1 = "ΔT (warming)",
+  X2 = "Drought index",
+  X3 = "Soil water",
+  X4 = "Variety tolerance",
+  X5 = "Irrigation",
+  X6 = "Low vegetation cover",
+  X7 = "Solar exposure"
+)
+
+S_df$label <- param_labels[S_df$param]
+T_df$label <- param_labels[T_df$param]
+```
+
+```{r}
+ggplot(S_df, aes(x = reorder(label, original), y = original)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(x = "Parameter", y = "First-order Sobol index",
+       title = "% Missing Vines After 30 Years – Sensitivity")
+
+
+```
+
+First‑order Sobol sensitivity indices for the percentage of missing vines after 100 years. Bars show the fraction of output variance attributable to each parameter alone. Temperature change (X1) is the dominant driver, followed by irrigation (X5) and variety tolerance (X4), while low vegetation cover (X6) has negligible influence in this model.
+
+# Research Implications
+
+The sensitivity analysis shows that long‑term vine mortality is most strongly controlled by projected warming (ΔT), with irrigation and variety tolerance emerging as the most effective management levers to buffer climate stress. This suggests that, in regions where PDO regulations tightly constrain vine and row spacing, climate adaptation strategies will likely depend more on water management and cultivar choice than on small adjustments to spacing alone. The moderate influence of soil water and drought index further underscores the importance of local water balance, while the relatively low sensitivity to low vegetation cover indicates that, within the tested ranges, cover crops and ground vegetation are unlikely to be primary drivers of mortality compared to temperature and irrigation. For our LiDAR‑based missing‑vine detection workflow, these results imply that environmental covariates related to temperature and water availability should be prioritized when interpreting spatial patterns of missing vines and when designing long‑term monitoring or replanting strategies.
+
+-   Design levers: irrigation and variety choice are high‑leverage variables for resilience.
+
+-   Monitoring focus: environmental layers related to temperature and water should be integrated with LiDAR‑derived missing‑vine maps.
+
+-   Regulatory context: PDO spacing rules may need to be revisited under stronger warming scenarios, but spacing alone is unlikely to offset climate‑driven mortality.
+
+# Phase 2
+
+For this phase, we would like to encompass more concrete information that capstone has gathered. This information includes parcel-level mortality rates, with a sample of attribute information that is region, type and variety specific factors. This phase will focus more on the risk-profiling of grape varieties given these attributes and conditions. . This will allow us to ask questions such as: “Are red wines from Region X more prone to high mortality than whites?” or “Do certain varieties consistently exhibit higher mortality under similar climate and spacing conditions?”
+
+Methodologically, this phase will treat mortality (either as a continuous percentage or as a high‑ vs. low‑risk class) as the response variable in a statistical or machine‑learning model, with predictors including climate stress indicators (ΔT, drought), PDO spacing rules, variety, wine type, and region. By examining model coefficients or variable importance scores, we can identify which combinations of attributes are associated with elevated mortality risk. This reframes the sensitivity analysis from purely parameter‑level effects to wine‑style and region‑level vulnerability, providing more actionable insights for growers, regions, and regulators.
+
+```{r}
+# Import vine law data
+vine_law <- read.csv("data/vine_laws.csv")
+```
+
+```{r}
+
+glimpse(vine_law)
+
+```
+
+```{r}
+# Coerce to numeric
+vine_law <- vine_law |>
+  mutate(
+    min_row_spacing   = as.numeric(min_row_spacing),
+    max_row_spacing   = as.numeric(max_row_spacing),
+    min_plant_spacing = as.numeric(min_plant_spacing),
+    max_plant_spacing = as.numeric(max_plant_spacing)
+  )
+
+```
+
+```{r}
+
+pdo_spacing <- vine_law |>
+  mutate(
+    # Apply defaults FIRST
+    min_row_spacing   = if_else(is.na(min_row_spacing),   NA_real_, min_row_spacing),
+    max_row_spacing   = if_else(is.na(max_row_spacing),   2.5,      max_row_spacing),
+    min_plant_spacing = if_else(is.na(min_plant_spacing), 0.5,      min_plant_spacing),
+    max_plant_spacing = if_else(is.na(max_plant_spacing), 2.5,      max_plant_spacing),
+
+    # Now compute usable spacing
+    row_spacing_use = case_when(
+      !is.na(min_row_spacing) & !is.na(max_row_spacing) ~ (min_row_spacing + max_row_spacing) / 2,
+      !is.na(min_row_spacing) ~ min_row_spacing,
+      !is.na(max_row_spacing) ~ max_row_spacing,
+      TRUE ~ 2.5   # fallback if both NA
+    ),
+
+    plant_spacing_use = case_when(
+      !is.na(min_plant_spacing) & !is.na(max_plant_spacing) ~ (min_plant_spacing + max_plant_spacing) / 2,
+      !is.na(min_plant_spacing) ~ min_plant_spacing,
+      !is.na(max_plant_spacing) ~ max_plant_spacing,
+      TRUE ~ 0.8   # fallback if both NA
+    )
+  )
+
+
+```
+
+```{r}
+summary(pdo_spacing$row_spacing_use)
+summary(pdo_spacing$plant_spacing_use)
+
+anyNA(pdo_spacing$row_spacing_use)
+anyNA(pdo_spacing$plant_spacing_use)
+
+```

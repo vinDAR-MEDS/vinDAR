@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vineyard_analysis"
+version = "0.1.0"
+description = "Vineyard analysis from LiDAR HD data"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.23",
+    "pandas>=2.0",
+    "shapely>=2.0",
+    "geopandas>=0.13",
+    "fiona>=1.9",
+    "laspy[lazrs]>=2.5",   # lazrs extra gives you LAZ read/write without external deps
+    "requests>=2.28",
+    "matplotlib>=3.7",
+    "scipy>=1.10",
+]
+
+[project.optional-dependencies]
+# PDAL Python bindings require the PDAL C++ library to be installed first
+# (via conda-forge or homebrew). See README for setup.
+pdal = ["pdal>=3.4"]
+viz = ["open3d>=0.18"]
+dev = ["ipykernel", "jupyter"]
+
+[tool.setuptools.packages.find]
+where = ["src"]   # adjust to your layout

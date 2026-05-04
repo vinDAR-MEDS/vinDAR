@@ -22,7 +22,7 @@ dependencies = [
 [project.optional-dependencies]
 # PDAL Python bindings require the PDAL C++ library to be installed first
 # (via conda-forge or homebrew). See README for setup.
-pdal = ["pdal>=3.4"]
+pdal = ["python-pdal>=3.4"]
 viz = ["open3d>=0.18"]
 dev = ["ipykernel", "jupyter"]
 

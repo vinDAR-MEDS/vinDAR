@@ -1,3 +1,5 @@
+import numpy as np
+
 def find_row_orientation(data, bins=256):
     """Return (line_angle_deg, row_spacing) for a points dataframe with x, y columns."""
     hist, xedges, yedges = np.histogram2d(data["x"], data["y"], bins=bins)

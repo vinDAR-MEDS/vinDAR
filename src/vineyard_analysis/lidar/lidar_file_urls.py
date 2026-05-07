@@ -38,6 +38,6 @@ def lidar_file_urls(parcels, zones):
                 hits = list(sindex.intersection(tile.bounds))
                 if not hits or not group.iloc[hits].intersects(tile).any():
                     continue
-                urls.add(LIDAR_URL.format(title=title, x=x_km, y=y_km))
+                urls.add(LIDAR_URL.format(title=title, x=x_km, y=y_km + 1))
 
     return sorted(urls)

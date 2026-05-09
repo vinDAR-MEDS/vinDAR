@@ -15,10 +15,12 @@ import os
 
 DATA_DIR = os.path.join("..", "data")
 
-PARCELS_FILE = "dra_plt/dra_plt.shp"     # Parcels / plots
+PARCELS_FILE = "AllVDR.gpkg"     # Parcels / plots
 AOC_FILE = "france_aoc.gpkg"             # Geometry for all AOC/PDOs in France
 TILES_FILE = "lidar_tiles.csv"           # LiDAR tile geometries
 SPACING_FILE = "aoc_regulations.csv"     # AOC spacing regulations
+
+OUTPUT_CSV = "parcel_results.csv"
 
 # ---------------------------------------------------------------------------
 # Coordinate reference system
@@ -50,10 +52,10 @@ PRIORITY_MAP = {
 DEPT_PREFIX = None
 
 # Wine region of interest. Set to None to skip filtering.
-WINE_REGION = "Rhône Valley"
+WINE_REGION = "Rhône"
 
 # Administrative region of interest. Set to None to skip filtering.
-ADMINISTRATIVE_REGION = "Provence-Alpes-Côte d'Azur"
+ADMINISTRATIVE_REGION = None
 
 # PDO/AOC of interest. Set to None to skip filtering.
 PDO_NAME = None
@@ -67,3 +69,14 @@ DESIGNATION_LEVEL = None
 
 RANDOM_STATE = 42
 SAMPLE_SIZE = 30
+
+# ---------------------------------------------------------------------------
+# Row Fitting Variables
+# ---------------------------------------------------------------------------
+
+DEFAULT_ROW_MIN = 1
+DEFAULT_ROW_MAX = 2.5
+DEFAULT_PLANT_MIN = 0.5
+DEFAULT_PLANT_MAX = 2.0
+STEP = 0.1
+DECIMALS = 1

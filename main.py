@@ -28,9 +28,10 @@ from vineyard_analysis.lidar.lidar_file_urls import lidar_file_urls
 
 OUTPUT_CSV = "parcel_results.csv"
 SAMPLE_SIZE = 10_000
-# Keep this LOW — the IGN server rate-limits aggressively.
-# Total in-flight requests = parcel workers × download workers (6 by default).
-PARCEL_WORKERS = 2
+# Download concurrency is now bounded globally by MAX_INFLIGHT_DOWNLOADS in
+# vineyard_analysis.lidar.download_all, so parcel workers can scale up
+# without exceeding IGN's COPC rate limit.
+PARCEL_WORKERS = 8
 
 FIELDNAMES = [
     "IDU",

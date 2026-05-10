@@ -13,7 +13,7 @@ import os
 # Paths
 # ---------------------------------------------------------------------------
 
-DATA_DIR = os.path.join("..", "data")
+DATA_DIR = os.path.join("data")
 
 PARCELS_FILE = "AllVDR.gpkg"     # Parcels / plots
 AOC_FILE = "france_aoc.gpkg"             # Geometry for all AOC/PDOs in France

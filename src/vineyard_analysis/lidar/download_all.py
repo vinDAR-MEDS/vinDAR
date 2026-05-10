@@ -3,6 +3,7 @@ In-memory lidar download + merge.
 Downloads .laz/.copc.laz files into memory and merges them into a single
 numpy structured array using PDAL. Nothing touches your project disk.
 """
+import threading
 import time
 import requests
 import numpy as np
@@ -11,6 +12,13 @@ import json
 import tempfile
 import os
 from concurrent.futures import ThreadPoolExecutor
+
+
+# Global cap on in-flight IGN requests, shared across every parcel worker.
+# IGN limits COPC downloads to 10 req/s; staying under that lets us scale
+# parcel-level parallelism without tripping 429s.
+MAX_INFLIGHT_DOWNLOADS = 8
+_download_semaphore = threading.Semaphore(MAX_INFLIGHT_DOWNLOADS)
 
 
 def download_all(urls, max_workers=2, timeout=60, max_retries=5):
@@ -26,7 +34,8 @@ def download_all(urls, max_workers=2, timeout=60, max_retries=5):
         last_err = None
         for attempt in range(max_retries):
             try:
-                r = requests.get(url, timeout=timeout)
+                with _download_semaphore:
+                    r = requests.get(url, timeout=timeout)
                 if r.status_code == 429 or 500 <= r.status_code < 600:
                     # Honor Retry-After if present, otherwise exponential backoff
                     retry_after = r.headers.get("Retry-After")

@@ -2,9 +2,9 @@
 __pycache__/
 *.py[codz]
 *$py.class
-data/
 data/bin/
 notebooks/
+.gitignore
 
 # C extensions
 *.so

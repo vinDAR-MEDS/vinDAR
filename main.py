@@ -1,9 +1,7 @@
 """Run vineyard parcel analysis in parallel and write results to CSV."""
-
 import csv
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
-
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import geopandas as gpd
 import laspy
 import matplotlib.pyplot as plt
@@ -14,7 +12,6 @@ import shapely
 from laspy import CopcReader
 from scipy.spatial import cKDTree
 from shapely.geometry import box
-
 from vineyard_analysis.analysis.clustering import cluster_points
 from vineyard_analysis.analysis.process_parcel import process_parcel
 from vineyard_analysis.analysis.row_analysis import find_row_orientation
@@ -25,14 +22,12 @@ from vineyard_analysis.io.zones import load_zones
 from vineyard_analysis.lidar.download_all import download_all, merge_in_memory
 from vineyard_analysis.lidar.lidar_file_urls import lidar_file_urls
 
-
 OUTPUT_CSV = "parcel_results.csv"
-SAMPLE_SIZE = 10_000
+SAMPLE_SIZE = 5_000
 # Download concurrency is now bounded globally by MAX_INFLIGHT_DOWNLOADS in
 # vineyard_analysis.lidar.download_all, so parcel workers can scale up
 # without exceeding IGN's COPC rate limit.
-PARCEL_WORKERS = 8
-
+PARCEL_WORKERS = 10
 FIELDNAMES = [
     "IDU",
     "row_spacing",
@@ -56,7 +51,7 @@ def load_inputs():
 def run_parcels(parcels, zones):
     """Process every parcel in parallel, returning a list of result dicts."""
     results = []
-    with ThreadPoolExecutor(max_workers=PARCEL_WORKERS) as executor:
+    with ProcessPoolExecutor(max_workers=PARCEL_WORKERS) as executor:
         futures = {
             executor.submit(process_parcel, i, parcels, zones): i
             for i in range(len(parcels))

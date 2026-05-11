@@ -21,7 +21,7 @@ MAX_INFLIGHT_DOWNLOADS = 8
 _download_semaphore = threading.Semaphore(MAX_INFLIGHT_DOWNLOADS)
 
 
-def download_all(urls, max_workers=2, timeout=60, max_retries=5):
+def download_all(urls, max_workers=1, timeout=60, max_retries=5):
     """
     Download all URLs into memory in parallel, with retry/backoff on 429 and 5xx.
 

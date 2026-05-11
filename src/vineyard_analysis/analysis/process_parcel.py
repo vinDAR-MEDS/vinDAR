@@ -183,7 +183,7 @@ def process_parcel(index, parcels, zones):
     )
 
     results = []
-    with ThreadPoolExecutor(max_workers=4) as ex:
+    with ThreadPoolExecutor(max_workers=2) as ex:
         futures = [
             ex.submit(evaluate_spacing, row.row_spacing, row.plant_spacing, plot, las_clip)
             for row in spacing_combinations.itertuples()

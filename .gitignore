@@ -5,6 +5,8 @@ __pycache__/
 data/bin/
 notebooks/
 .gitignore
+src/vineyard_analysis.egg-info/
+/old
 
 # C extensions
 *.so

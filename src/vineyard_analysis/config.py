@@ -52,7 +52,7 @@ PRIORITY_MAP = {
 DEPT_PREFIX = None
 
 # Wine region of interest. Set to None to skip filtering.
-WINE_REGION = "Rhône"
+WINE_REGION = None
 
 # Administrative region of interest. Set to None to skip filtering.
 ADMINISTRATIVE_REGION = None
@@ -78,5 +78,5 @@ DEFAULT_ROW_MIN = 1
 DEFAULT_ROW_MAX = 2.5
 DEFAULT_PLANT_MIN = 0.5
 DEFAULT_PLANT_MAX = 2.0
-STEP = 0.1
-DECIMALS = 1
+STEP = 0.05
+DECIMALS = 2

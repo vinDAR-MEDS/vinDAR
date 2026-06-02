@@ -23,6 +23,39 @@ SPACING_FILE = "aoc_regulations.csv"     # AOC spacing regulations
 OUTPUT_CSV = "parcel_results.csv"
 
 # ---------------------------------------------------------------------------
+# LiDAR tile caching
+# ---------------------------------------------------------------------------
+
+# When True, downloaded LiDAR tiles are written to (and re-read from) an
+# on-disk cache so repeat runs skip the network. When False, tiles are
+# downloaded into memory each run and never touch disk. The env var
+# VINEYARD_USE_CACHE (0/1/true/false) overrides this default when set.
+def _env_flag(name, default):
+    val = os.environ.get(name)
+    if val is None:
+        return default
+    return val.strip().lower() in ("1", "true", "yes", "on")
+
+
+USE_CACHE = _env_flag("VINEYARD_USE_CACHE", True)
+
+# Directory for the on-disk tile cache (only used when USE_CACHE is True).
+LIDAR_CACHE_DIR = os.environ.get(
+    "VINEYARD_LIDAR_CACHE_DIR",
+    os.path.join(os.path.expanduser("~"), "..", "..",
+                 "capstone", "vindar", "vindar_lidar_tiles"),
+)
+
+# Directory where tuning fixtures (prepared point clouds) are written/read by
+# tune.py. Kept off the home volume by default so large fixture sets don't fill
+# the local disk. Override per-run with VINEYARD_FIXTURES_DIR.
+FIXTURES_DIR = os.environ.get(
+    "VINEYARD_FIXTURES_DIR",
+    os.path.join(os.path.expanduser("~"), "..", "..",
+                 "capstone", "vindar", "vindar_fixtures"),
+)
+
+# ---------------------------------------------------------------------------
 # Coordinate reference system
 # ---------------------------------------------------------------------------
 

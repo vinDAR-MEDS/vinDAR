@@ -7,7 +7,7 @@ def cluster_points(
     data,
     eps=0.20,
     min_points=3,
-    top_fraction=0.30,
+    top_fraction=0.75,
     min_top_points=2,
     min_z_range=0.1,
     centre_band=(0.0, 1.0),

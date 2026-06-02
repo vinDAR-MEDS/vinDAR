@@ -57,33 +57,39 @@ This is a capstone project for the [Master of Environmental Data Science](https:
 
 # Repositories in This Organization
 
-```         
+```
 vinDAR/
 ├── README.md
 ├── LICENSE
 ├── environment.yml
 ├── pyproject.toml
-├── main.py
-├── notebooks/
-│   ├── exploratory_analysis.ipynb
-│   └── prototype_clustering.ipynb
-├── src/
-│   └── vineyard_analysis/
-│       ├── config.py
-│       ├── io/
-│       │   ├── aoc.py
-│       │   ├── parcels.py
-│       │   └── zones.py
-│       ├── lidar/
-│       │   ├── lidar_file_urls.py
-│       │   └── download_all.py
-│       └── analysis/
-│           ├── clustering.py
-│           ├── row_analysis.py
-│           └── process_parcel.py
-└── test/
-    └── test_parcel_processing.py
-
+├── main.py                      # entrypoint for the pipeline
+├── tune.py                      # parameter-tuning script
+└── src/
+    └── vineyard_analysis/
+        ├── config.py            # paths, CRS, sampling, cache flags
+        ├── params.py            # FitParams — all tunable model parameters
+        ├── io/
+        │   ├── aoc.py
+        │   ├── parcels.py
+        │   └── zones.py
+        ├── lidar/
+        │   ├── lidar_file_urls.py
+        │   └── download_all.py  # download + PDAL merge (caching optional)
+        ├── analysis/
+        │   ├── clustering.py    # DBSCAN vine-centroid detection
+        │   ├── row_analysis.py  # 2D FFT row-orientation estimation
+        │   ├── grid.py          # spacing-combo + expected-grid geometry
+        │   ├── matching.py      # anisotropic 1:1 matching + presence count
+        │   ├── scoring.py       # thresholds, rank score, quality flags
+        │   ├── fitting.py       # spacing/phase/angle search (tunable)
+        │   └── process_parcel.py# prepare_parcel_points + fit_parcel
+        └── runner/
+            ├── settings.py      # run-time constants (pool size, paths)
+            ├── workers.py       # worker-process body + lifecycle
+            ├── lifecycle.py     # process-group / signal handling
+            ├── results_writer.py# CSV flushing, quarantine log, sorted rewrite
+            └── executor.py      # input loading + scheduling loop
 ```
 
 Key Directories
@@ -125,6 +131,13 @@ python main.py
 - detected vine count
 - missing‑vine percentage
 
+# LiDAR Tile Caching (optional)
+Downloaded LiDAR tiles can optionally be cached on disk so repeat runs skip the
+network. Caching is controlled in `src/vineyard_analysis/config.py`:
+
+- `USE_CACHE` — `True` (default) writes/reads an on-disk tile cache; `False`
+  downloads each tile into memory and never touches disk.
+- `LIDAR_CACHE_DIR` — where cached tiles live when caching is on.
 
 # Authors and Team
 

@@ -15,6 +15,8 @@ from concurrent.futures import ThreadPoolExecutor
 import requests
 import numpy as np
 import pdal
+
+from vineyard_analysis import config
  
 MAX_REQUESTS_PER_SECOND = 8.0
 RATE_BURST = 5
@@ -22,13 +24,10 @@ DEFAULT_MAX_WORKERS = 48
  
  
 # ──────────────────────────────────────────────────────────────────────────────
-# ON-DISK TILE CACHE
+# ON-DISK TILE CACHE (optional — see config.USE_CACHE)
 # ──────────────────────────────────────────────────────────────────────────────
- 
-_CACHE_DIR = os.environ.get(
-    "VINEYARD_LIDAR_CACHE_DIR",
-    os.path.join(os.path.expanduser("~"), "..", "..", "capstone", "vindar", "vindar_lidar_tiles"),
-)
+
+_CACHE_DIR = config.LIDAR_CACHE_DIR
 _cache_dir_ready = False
 _cache_dir_lock = threading.Lock()
  
@@ -60,8 +59,29 @@ def _cache_suffix(url):
  
  
 def _cache_path(url):
+    """Canonical (write) location for a tile: hash of the URL + suffix."""
     digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:24]
     return os.path.join(get_cache_dir(), f"{digest}{_cache_suffix(url)}")
+
+
+def _find_cached(url):
+    """Return an existing, non-empty cached tile for ``url`` or None.
+
+    Checks the canonical hashed path *and* the tile's original IGN basename,
+    so tiles downloaded under their natural filename are still treated as
+    cache hits rather than re-downloaded.
+    """
+    cache_dir = get_cache_dir()
+    basename = url.split("/")[-1].split("?")[0]
+    candidates = (
+        _cache_path(url),
+        os.path.join(cache_dir, basename),
+    )
+    for path in candidates:
+        size = _cached_size(path)
+        if size is not None and size > 0:
+            return path
+    return None
  
  
 def _write_atomic(cache_path, data):
@@ -256,8 +276,15 @@ def _gated_request(session, url, timeout):
 # DOWNLOAD (cache-first)
 # ──────────────────────────────────────────────────────────────────────────────
  
-def download_all(urls, max_workers=DEFAULT_MAX_WORKERS, timeout=60, max_retries=5):
-    """Ensure each URL's tile is present in the on-disk cache.
+def download_all(urls, max_workers=DEFAULT_MAX_WORKERS, timeout=60, max_retries=5,
+                 use_cache=None):
+    """Fetch each URL's LiDAR tile, optionally via an on-disk cache.
+
+    When use_cache is True, tiles are read from / written to the on-disk cache
+    (a cache hit skips the network and rate limiter) and the payload is a file
+    path. When False, tiles are downloaded into memory and the payload is a
+    bytes blob — never touching disk. ``None`` falls back to config.USE_CACHE.
+    Either payload form can be passed straight to merge_in_memory().
  
     Returns:
         results : dict {url: cache_path} for every tile available on disk
@@ -268,16 +295,22 @@ def download_all(urls, max_workers=DEFAULT_MAX_WORKERS, timeout=60, max_retries=
     A cache hit short-circuits before the rate limiter and the network, so warm
     tiles cost nothing against the global request budget.
     """
+    if use_cache is None:
+        use_cache = config.USE_CACHE
+
     session = _get_session()
-    get_cache_dir()  # make sure the directory exists before the threads start
+    if use_cache:
+        get_cache_dir()  # ensure the cache directory exists before threads start
  
     def _fetch(url):
-        cache_path = _cache_path(url)
+        cache_path = _cache_path(url) if use_cache else None
  
-        # Cache hit — already on disk, skip the network entirely.
-        size = _cached_size(cache_path)
-        if size is not None and size > 0:
-            return url, cache_path, None, True
+        # Cache hit — already on disk (under either naming scheme), skip
+        # the network entirely.
+        if use_cache:
+            hit = _find_cached(url)
+            if hit is not None:
+                return url, hit, None, True
  
         backoff = 2.0
         last_err = None
@@ -293,8 +326,18 @@ def download_all(urls, max_workers=DEFAULT_MAX_WORKERS, timeout=60, max_retries=
                 if 400 <= r.status_code < 500:
                     return url, None, f"{r.status_code} (not retried)", False
                 r.raise_for_status()
-                _write_atomic(cache_path, r.content)
-                return url, cache_path, None, False
+                if use_cache:
+                    try:
+                        _write_atomic(cache_path, r.content)
+                        return url, cache_path, None, False
+                    except OSError as e:
+                        # Cache write failed (e.g. disk full / ENOSPC). Don't
+                        # abort the run — fall back to the in-memory bytes,
+                        # which merge_in_memory accepts just like a path.
+                        print(f"[cache] could not write {cache_path}: {e}; "
+                              f"using in-memory tile", flush=True)
+                        return url, r.content, None, False
+                return url, r.content, None, False
             except requests.RequestException as e:
                 last_err = str(e)
                 time.sleep(backoff)
@@ -304,14 +347,16 @@ def download_all(urls, max_workers=DEFAULT_MAX_WORKERS, timeout=60, max_retries=
     results = {}
     log_lines = []
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
-        for url, path, err, cached in ex.map(_fetch, urls):
+        for url, payload, err, cached in ex.map(_fetch, urls):
             name = url.split("/")[-1]
-            if path is not None:
-                results[url] = path
+            if payload is not None:
+                results[url] = payload
                 if cached:
                     log_lines.append(f"  • {name} (cached)")
+                elif isinstance(payload, (bytes, bytearray, memoryview)):
+                    log_lines.append(f"  ✓ {name} ({len(payload) / 1e6:.1f} MB)")
                 else:
-                    mb = (_cached_size(path) or 0) / 1e6
+                    mb = (_cached_size(payload) or 0) / 1e6
                     log_lines.append(f"  ✓ {name} ({mb:.1f} MB)")
             else:
                 log_lines.append(f"  ✗ {name}: {err}")

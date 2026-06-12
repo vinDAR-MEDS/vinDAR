@@ -60,42 +60,59 @@ _DEFAULT_PARAMS_DICT = DEFAULT_PARAMS.as_dict()
 # (lo, hi) bounds for every tunable FitParams field. Integer fields are coerced
 # by FitParams.from_dict; see INTEGER_PARAMS for rounding and bound padding.
 ALL_BOUNDS = {
-    "thresh_factor_along":      (0.20, 0.80),
-    "thresh_factor_across":     (0.20, 0.80),
-    "thresh_floor":             (0.10, 0.50),
-    "thresh_cap":               (0.60, 1.25),
-    "min_mutual_match_rate":    (0.20, 0.50),
-    "presence_factor":          (0.30, 0.90),
-    "presence_floor":           (0.20, 0.80),
-    "presence_cap":             (1.00, 2.50),
-    "weight_rmse":              (0.20, 1.00),
-    "weight_coverage":          (0.10, 0.60),
+    "thresh_factor_along":      (0.30, 0.80),
+    "thresh_factor_across":     (0.25, 0.70),
+    "thresh_floor":             (0.20, 0.50),
+    "thresh_cap":               (0.75, 1.00),
+    "presence_factor":          (0.30, 0.70),
+    "presence_floor":           (0.30, 0.90),   
+    "presence_cap":             (1.00, 2.00),
+    "weight_rmse":              (0.20, 0.85),   
+    "weight_coverage":          (0.10, 0.40),
     "weight_density":           (0.10, 0.60),
-    "max_extension_steps":      (2, 6),
     "swap_margin":              (0.00, 0.10),
     "angle_refine_range":       (1.0, 5.00),
-    "orientation_radius_div":   (1.00, 4.00),
-    "orientation_radius_floor": (0.10, 0.600),
-    "orientation_min_points":   (2, 3),
+    "orientation_radius_div":   (1.20, 2.00),
+    "orientation_radius_floor": (0.10, 0.75),
+    "orientation_min_points":   (2, 5),          
     "scoring_radius_div":       (2.00, 8.00),
-    "scoring_radius_floor":     (0.15, 0.60),
-    "scoring_min_points":       (1, 2),
+    "scoring_radius_floor":     (0.10, 0.75),
+    "scoring_min_points":       (1, 4),          
+    "cluster_min_top_points":   (1, 5),         
+    "cluster_min_z_range":      (0.00, 0.10),
+    "cluster_centre_lo":        (0.00, 0.20),
+    "cluster_centre_hi":        (0.80, 1.00),
+ 
+    # ── FROZEN: pruned from the search (|r| with score < 0.1 across 301 trials) ─
+    # Held at their trial-293 values; degenerate bounds enforce the freeze.
+    "min_mutual_match_rate":    (0.36237957159580175, 0.36237957159580175),
+    "max_extension_steps":      (5, 5),
+    "cluster_top_fraction":     (0.32491468160648385, 0.32491468160648385),
+ 
     # ── Searchable in principle, but NOT in the default tunable set ───────────
-    # Resolution/cost knobs (monotone-ish in fit quality; fix them instead):
+    # Resolution/cost knobs (held constant across all trials; fix them instead):
     "phase_optimization_steps": (6, 24),
     "phase_refine_steps":       (4, 16),
     "angle_refine_steps":       (3, 9),
     # Inert under the current pipeline (only gates a log warning):
     "fft_prior_tolerance":      (0.10, 0.60),
-}
- 
+}                    
 # Parameters whose value is rounded to an integer during the search. Their
 # bounds are widened by half a unit on each side in _get_search_bounds so that
 # rounding maps uniformly onto the declared integer range, endpoints included.
 INTEGER_PARAMS = {
     "max_extension_steps", "phase_optimization_steps", "phase_refine_steps",
     "angle_refine_steps", "orientation_min_points", "scoring_min_points",
+    "cluster_min_top_points",
 }
+ 
+# Rank-score weights. The model uses only their RELATIVE magnitude, so the
+# search is normalised to the simplex (sum == 1) in _vec_to_params; otherwise
+# the absolute scale is a redundant dimension and collinear weight vectors look
+# like distinct points to the optimiser (the cause of the weight_rmse pinning
+# seen in tuning). The defaults already sum to 1, so normalisation is a no-op
+# whenever the weights are left untuned.
+WEIGHT_PARAMS = ("weight_rmse", "weight_coverage", "weight_density")
  
 # ── Parameter groups, keyed by what they actually influence ───────────────────
 # GEOMETRY: determine row/plant spacing, angle, phase — measurable internally by
@@ -107,6 +124,8 @@ GEOMETRY_PARAMS = {
     "max_extension_steps", "swap_margin", "angle_refine_range",
     "orientation_radius_div", "orientation_radius_floor", "orientation_min_points",
     "scoring_radius_div", "scoring_radius_floor", "scoring_min_points",
+    "cluster_top_fraction", "cluster_min_top_points", "cluster_min_z_range",
+    "cluster_centre_lo", "cluster_centre_hi",
 }
 # PRESENCE: feed ONLY the missing-vine accounting. No internal-geometry signal.
 PRESENCE_PARAMS = {"presence_factor", "presence_floor", "presence_cap"}
@@ -140,6 +159,7 @@ NORM_FLOORS = {
     "label_rmse":         3.00,   # percentage points
     "stability_dev":      3.00,   # percentage points
     "ablation_err":       3.00,   # percentage points
+    "prior_shortfall":    0.10,   # fraction of parcels (population missingness prior)
 }
  
  
@@ -307,9 +327,36 @@ def _load_fixtures(fixtures_dir, max_parcels=None, split=None):
         pdir = os.path.join(fixtures_dir, entry["dir"])
         plot = gpd.read_parquet(os.path.join(pdir, "plot.parquet"))
         las_clip = pd.read_parquet(os.path.join(pdir, "las_clip.parquet"))
+        _shrink_int_columns(las_clip)
         fixtures.append(PreparedParcel(idu=entry["idu"], plot=plot,
                                        las_clip=las_clip, log=[]))
     return fixtures
+ 
+ 
+def _shrink_int_columns(df):
+    """Lossless in-place memory trim for the loaded point cloud.
+ 
+    Under `spawn` every worker holds EVERY fixture resident for the whole
+    search, so peak RAM is roughly (workers x total point count). 64-bit
+    integer attribute columns (Classification, return numbers, source ids, …)
+    never need 64 bits at LiDAR scale, so halving them to 32-bit meaningfully
+    cuts that resident footprint.
+ 
+    Only downcast when EVERY value provably fits the narrower dtype, so the
+    stored values — and therefore every fit result — are byte-for-byte
+    unchanged. Float columns (the x/y/z coordinates) are deliberately left at
+    full precision: shrinking them would coarsen the fit RMSE.
+    """
+    for c in df.columns:
+        dt = df[c].dtype
+        if dt == "int64":
+            col = df[c]
+            if col.min() >= np.iinfo("int32").min and col.max() <= np.iinfo("int32").max:
+                df[c] = col.astype("int32")
+        elif dt == "uint64":
+            col = df[c]
+            if col.max() <= np.iinfo("uint32").max:
+                df[c] = col.astype("uint32")
  
  
 def _count_fixtures(fixtures_dir, max_parcels=None, split=None):
@@ -409,7 +456,7 @@ def _compute_perturb_selection(las_clip, plot, mode, frac, seed):
     if mode == "ablate":
         if not _HAVE_PERTURB:
             return "none", None, 0.0
-        veg = las_clip[las_clip.Classification.isin([3, 4])]
+        veg = las_clip[las_clip.Classification.isin([1, 3, 4])]
         if len(veg) < 8:
             return "none", None, 0.0
  
@@ -546,17 +593,17 @@ class _Fitter:
             [(i, params_dict, transform) for i in self._order],
             chunksize=1,
         )
-
-    def fit_batch(self, params, transforms):
+ 
+    def fit_batch(self, params, transforms, subset=None):
         """Fit every fixture under EACH transform, dispatching the whole batch
         in ONE pool round.
-
+ 
         `transforms` is a list whose first entry is conventionally ``None`` (the
         un-perturbed base fit) followed by any perturbation transforms (one per
         stability/ablation seed). Returns a list parallel to `transforms`; each
         element is that transform's per-fixture results in natural fixture
         order.
-
+ 
         Why this exists: the stability/ablation objectives previously issued a
         separate ``starmap`` for the base fit and for every seed. Each starmap is
         a barrier — workers that finish early sit idle until the slowest parcel
@@ -566,33 +613,59 @@ class _Fitter:
         scheduler the trial's entire workload at once, so a worker that drains
         its base fits immediately picks up perturbed fits instead of waiting.
         Total work and per-task pickling are unchanged; only the idle tails go.
-
+ 
         Results aggregate by IDU downstream, so dispatch order is irrelevant to
         correctness — we still lead with the heaviest fixtures (LPT) so the big
         point clouds never become end-of-batch stragglers.
         """
         n_groups = len(transforms)
+        if subset is None:
+            if self.pool is None:
+                return [[_fit_one_local(self.fixtures[i], params, t, cache_key=i)
+                         for i in range(self.n_fixtures)]
+                        for t in transforms]
+ 
+            params_dict = params.as_dict()
+            # Heaviest fixture first (self._order is LPT), all of its transform
+            # variants together, before the next fixture: a heavy fixture is heavy
+            # under every transform, so this front-loads the costly work.
+            index = []        # (group_index, fixture_index), parallel to payload
+            payload = []      # (fixture_index, params_dict, transform)
+            for i in self._order:
+                for gi, t in enumerate(transforms):
+                    index.append((gi, i))
+                    payload.append((i, params_dict, t))
+ 
+            raw = self.pool.starmap(_worker_fit, payload, chunksize=1)
+ 
+            groups = [[None] * self.n_fixtures for _ in range(n_groups)]
+            for (gi, i), r in zip(index, raw):
+                groups[gi][i] = r
+            return groups
+ 
+        # -- Multi-fidelity rung: fit only `subset`, return COMPACT groups --
+        # Dispatch the subset in LPT order (heaviest first); results aggregate by
+        # iteration/IDU downstream, so the compact ordering is irrelevant.
+        keep = set(subset)
+        order = [i for i in self._order if i in keep]
         if self.pool is None:
             return [[_fit_one_local(self.fixtures[i], params, t, cache_key=i)
-                     for i in range(self.n_fixtures)]
+                     for i in order]
                     for t in transforms]
-
+ 
         params_dict = params.as_dict()
-        # Heaviest fixture first (self._order is LPT), all of its transform
-        # variants together, before moving to the next fixture. A heavy fixture
-        # is heavy under every transform, so this front-loads the costly work.
-        index = []        # (group_index, fixture_index), parallel to payload
-        payload = []      # (fixture_index, params_dict, transform)
-        for i in self._order:
+        index = []        # (group_index, slot), parallel to payload
+        payload = []
+        for slot, i in enumerate(order):
             for gi, t in enumerate(transforms):
-                index.append((gi, i))
+                index.append((gi, slot))
                 payload.append((i, params_dict, t))
-
+ 
         raw = self.pool.starmap(_worker_fit, payload, chunksize=1)
-
-        groups = [[None] * self.n_fixtures for _ in range(n_groups)]
-        for (gi, i), r in zip(index, raw):
-            groups[gi][i] = r
+ 
+        groups = [[None] * len(order) for _ in range(n_groups)]
+        for (gi, slot), r in zip(index, raw):
+            groups[gi][slot] = r
         return groups
  
  
@@ -683,6 +756,13 @@ def _geometry_components(results):
         "pin_frac":           (n_pinned / n_fit) if n_fit else 1.0,
         "count_presence_div": float(np.mean(divergences)) if divergences else 0.0,
         "mean_missing":       float(np.mean(missing_vals)) if missing_vals else 0.0,
+        # Population-missingness diagnostics (free, threshold-fixed at 20%). The
+        # median is the robust centre; frac_le20 is the share of parcels in the
+        # ">=80% present" region. Both are logged every trial so a systematic
+        # over-prediction of missingness is obvious at a glance.
+        "median_missing":     float(np.median(missing_vals)) if missing_vals else 0.0,
+        "frac_le20":          float(np.mean(np.asarray(missing_vals) <= 20.0))
+                              if missing_vals else 0.0,
         "n_fit":              n_fit,
         "n_total":            n_total,
     }
@@ -706,7 +786,7 @@ def _label_component(results, labels, pred_column):
  
 def _objective_transforms(needs, frac, seeds):
     """Plan the transforms one evaluation requires, base first.
-
+ 
     Returns ``(transforms, n_stability, n_ablation)`` where ``transforms[0]`` is
     ``None`` (the un-perturbed fit), followed by the stability subsample seeds
     and then the ablation seeds. ``_Fitter.fit_batch`` runs the whole list in a
@@ -724,13 +804,13 @@ def _objective_transforms(needs, frac, seeds):
                        for s in seeds]
         n_abl = len(seeds)
     return transforms, n_stab, n_abl
-
-
+ 
+ 
 def _stability_component(base_results, pert_sets):
     """Self-supervised: drop `frac` of points and measure how much the
     presence-based missingness moves, averaged over seeds. A reliable estimator
     barely moves. Returned in percentage points.
-
+ 
     `pert_sets` are the already-fitted subsample result sets (one per seed). The
     fits were issued in the batched dispatch, so this only aggregates them.
     """
@@ -748,23 +828,23 @@ def _stability_component(base_results, pert_sets):
                 deviations.append(abs(float(p) - float(b)))
     return {"stability_dev": float(np.mean(deviations)) if deviations else 0.0,
             "n_stability": len(deviations)}
-
-
+ 
+ 
 def _ablation_component(base_results, pert_sets):
     """Self-supervised: remove a known fraction of WHOLE detected vines and
     check that the estimated missingness rises by the expected amount.
-
+ 
     For each parcel, removing `removed_frac` of detected vines should raise the
     presence-based missingness by approximately
         target_delta = removed_frac * present_fraction_full * 100   (pp)
     where present_fraction_full = vines_present / points_expected of the full
     fit. ablation_err is the mean |observed_delta - target_delta| in pp.
-
+ 
     This calibrates the SENSITIVITY of the geometry->presence->count chain to
     real removals without any hand labels. It cannot detect the failure mode
     where genuinely-missing vines still leave spurious returns, so treat it as a
     sensitivity/bias probe, not an absolute calibration.
-
+ 
     `pert_sets` are the already-fitted ablation result sets (one per seed) from
     the batched dispatch; this only aggregates them.
     """
@@ -777,7 +857,7 @@ def _ablation_component(base_results, pert_sets):
         m = r.get("vines_missing_pct_presence")
         if n_exp and n_pres is not None and m is not None and n_exp > 0:
             base[_result_idu(r)] = (float(m), float(n_pres) / float(n_exp))
-
+ 
     errs = []
     for pert in pert_sets:
         for r in pert:
@@ -797,6 +877,30 @@ def _ablation_component(base_results, pert_sets):
             "n_ablation": len(errs)}
  
  
+def _prior_component(base_results, thresh, target_frac):
+    """Population-level missingness prior. If you know that most parcels are at
+    or below `thresh`% missing, a fitted model should put at least `target_frac`
+    of its parcels there too. prior_shortfall is how far below that target the
+    model falls, in fraction-of-parcels (lower is better, 0 once the target is
+    met).
+ 
+    This is deliberately ONE-SIDED and quantile-based: it only penalizes
+    UNDER-shooting the share of low-missing parcels, never the genuinely
+    high-missing tail, and it ignores how extreme that tail is. Where ablation
+    calibrates the SLOPE of the missingness response, this anchors its absolute
+    LEVEL — together they stop a parameter set from being both perfectly
+    sensitive and badly biased.
+    """
+    vals = [float(r["vines_missing_pct_presence"]) for r in base_results
+            if _is_fit(r) and r.get("vines_missing_pct_presence") is not None]
+    if not vals:
+        return {"prior_frac_le": 0.0, "prior_shortfall": 0.0, "n_prior": 0}
+    frac_le = float(np.mean(np.asarray(vals) <= float(thresh)))
+    shortfall = max(0.0, float(target_frac) - frac_le)
+    return {"prior_frac_le": frac_le, "prior_shortfall": shortfall,
+            "n_prior": len(vals)}
+ 
+ 
 # ──────────────────────────────────────────────────────────────────────────────
 # OBJECTIVE PRESETS
 # ──────────────────────────────────────────────────────────────────────────────
@@ -807,6 +911,7 @@ def _ablation_component(base_results, pert_sets):
 #   presence   : internal + count/presence agreement. Tunes presence params.
 #   stability  : internal + subsample robustness of the missingness output.
 #   ablation   : internal + calibrated response to known vine removals.
+#   ablation_prior : ablation + a population prior on absolute missingness level.
 #   labels     : optimise predicted-vs-true missingness (needs --labels).
 #   combined   : geometry internal + labels.
 #
@@ -836,6 +941,16 @@ _PRESETS = {
                     "pin_frac": 0.5, "ablation_err": 1.0},
         "presence_dependent": True,
         "needs": {"ablation"},
+    },
+    "ablation_prior": {
+        # Ablation (slope: does missingness move correctly under removals) PLUS
+        # the population-level prior (level: is the absolute missingness biased).
+        # Pairs a sensitivity term with an anchor on absolute level so the search
+        # can't win by being sensitive-but-biased. See --prior-* flags.
+        "weights": {"mean_rmse": 0.75, "fail_frac": 1.0, "flag_frac": 0.5,
+                    "pin_frac": 0.5, "ablation_err": 1.0, "prior_shortfall": 1.0},
+        "presence_dependent": True,
+        "needs": {"ablation", "prior"},
     },
     "labels": {
         "weights": {"fail_frac": 0.5, "label_rmse": 1.0},
@@ -868,48 +983,57 @@ def _score(comp, weights, baseline_comp):
     return score / total_weight
  
  
-def _evaluate_components(all_results, n_stab, n_abl, labels, pred_column, needs):
+def _evaluate_components(all_results, n_stab, n_abl, labels, pred_column, needs,
+                         prior=None):
     """Assemble the full component dict from a batch of already-fitted results.
-
+ 
     `all_results` comes straight from ``_Fitter.fit_batch``: element 0 is the
     un-perturbed base fit, then `n_stab` subsample sets, then `n_abl` ablation
     sets. Splitting it here (rather than re-fitting inside the stability/ablation
     components) is what lets a whole trial — base fit plus every perturbation
     seed — go out in one pool round.
+ 
+    `prior`, when set, is the ``(thresh, target_frac)`` for the population
+    missingness prior; it is scored from the base fit only.
     """
     base_results = all_results[0]
     i = 1
     stab_sets = all_results[i:i + n_stab]; i += n_stab
     abl_sets = all_results[i:i + n_abl]; i += n_abl
-
+ 
     comp = _geometry_components(base_results)
     comp.update(_label_component(base_results, labels, pred_column))
     comp.setdefault("label_rmse", 0.0)
     comp.setdefault("n_labeled", 0)
     comp["stability_dev"] = 0.0
     comp["ablation_err"] = 0.0
+    comp["prior_shortfall"] = 0.0
     if "stability" in needs:
         comp.update(_stability_component(base_results, stab_sets))
     if "ablation" in needs:
         comp.update(_ablation_component(base_results, abl_sets))
+    if "prior" in needs and prior is not None:
+        comp.update(_prior_component(base_results, prior[0], prior[1]))
     return comp
-
-
-def _fit_and_evaluate(fitter, params, labels, pred_column, needs, frac, seeds):
+ 
+ 
+def _fit_and_evaluate(fitter, params, labels, pred_column, needs, frac, seeds,
+                      prior=None, subset=None):
     """One batched fit + full component assembly.
-
+ 
     The base fit and every stability/ablation seed are dispatched in a SINGLE
     pool round (see ``_Fitter.fit_batch``), then aggregated. Returns
     ``(base_results, components)``.
     """
     transforms, n_stab, n_abl = _objective_transforms(needs, frac, seeds)
-    all_results = fitter.fit_batch(params, transforms)
+    all_results = fitter.fit_batch(params, transforms, subset=subset)
     comp = _evaluate_components(all_results, n_stab, n_abl,
-                                labels, pred_column, needs)
+                                labels, pred_column, needs, prior)
     return all_results[0], comp
-
-
-def _write_trial_record(fp, trial, j, params_dict, comp, baseline=False):
+ 
+ 
+def _write_trial_record(fp, trial, j, params_dict, comp, baseline=False,
+                        pruned=False, rung_frac=None):
     """Append one trial's result to the JSONL stream and flush immediately, so
     an interrupted run still leaves every completed trial on disk."""
     if fp is None:
@@ -925,6 +1049,10 @@ def _write_trial_record(fp, trial, j, params_dict, comp, baseline=False):
         "pin_frac": comp.get("pin_frac"),
         "count_presence_div": comp.get("count_presence_div"),
         "mean_missing": comp.get("mean_missing"),
+        "median_missing": comp.get("median_missing"),
+        "frac_le20": comp.get("frac_le20"),
+        "prior_frac_le": comp.get("prior_frac_le"),
+        "prior_shortfall": comp.get("prior_shortfall"),
         "stability_dev": comp.get("stability_dev"),
         "ablation_err": comp.get("ablation_err"),
         "label_rmse": comp.get("label_rmse"),
@@ -932,6 +1060,10 @@ def _write_trial_record(fp, trial, j, params_dict, comp, baseline=False):
         "n_total": comp.get("n_total"),
         "params": params_dict,
     }
+    if rung_frac is not None:
+        rec["rung_frac"] = rung_frac
+    if pruned:
+        rec["pruned"] = True
     fp.write(json.dumps(rec) + "\n")
     fp.flush()
  
@@ -962,50 +1094,94 @@ def _vec_to_params(vec, names):
             overrides[name] = int(min(max(round(v), lo), hi))
         else:
             overrides[name] = float(v)
-    return FitParams.from_dict({**_DEFAULT_PARAMS_DICT, **overrides})
+    merged = {**_DEFAULT_PARAMS_DICT, **overrides}
+    # Project the rank-score weights onto the simplex (L1-normalise to sum 1).
+    # Only their ratio affects the fit, so this collapses the redundant scale
+    # dimension; the recorded params therefore also store normalised weights,
+    # making any best set reproduce its run exactly. Guard a degenerate sum.
+    wsum = sum(merged.get(k, 0.0) for k in WEIGHT_PARAMS)
+    if wsum > 0:
+        for k in WEIGHT_PARAMS:
+            merged[k] = merged[k] / wsum
+    return FitParams.from_dict(merged)
  
  
-def _run_trial(params, fitter, labels, pred_column, weights, baseline_comp,
-               needs, frac, seeds, history, trials_fp=None):
-    base_results, comp = _fit_and_evaluate(
-        fitter, params, labels, pred_column, needs, frac, seeds)
-    j = _score(comp, weights, baseline_comp)
-    params_dict = params.as_dict()
-    history.append((j, params_dict, comp))
-    n = len(history)
-    _write_trial_record(trials_fp, n, j, params_dict, comp)
-
+def _print_trial(n, j, comp):
+    """Single per-trial status line (factored out so the multi-fidelity Optuna
+    path can reuse the exact same format as random/DE)."""
     extra = ""
     if comp.get("n_stability"):
         extra += f"  stab={comp['stability_dev']:.2f}"
     if comp.get("n_ablation"):
         extra += f"  abl_err={comp['ablation_err']:.2f}"
+    if comp.get("n_prior"):
+        extra += f"  le_t={comp['prior_frac_le']:.0%}(short={comp['prior_shortfall']:.2f})"
     if comp.get("n_labeled"):
         extra += f"  label_rmse={comp['label_rmse']:.2f}"
     print(f"  trial {n:4d}  J={j:.4f}  rmse={comp['mean_rmse']:.3f}  "
           f"match={1 - comp['miss_match']:.3f}  flag={comp['flag_frac']:.2f}  "
           f"pin={comp['pin_frac']:.2f}  fit={comp['n_fit']}/{comp['n_total']}"
-          f"  miss={comp['mean_missing']:.1f}%{extra}", flush=True)
+          f"  miss={comp['mean_missing']:.1f}%(med={comp['median_missing']:.1f} "
+          f"le20={comp['frac_le20']:.0%}){extra}", flush=True)
+ 
+ 
+def _parse_fidelity(spec):
+    """Parse a '--fidelity' spec ('0.25,0.5,1.0') into sorted unique rung
+    fractions in (0, 1]. The top rung is forced to 1.0 (the full set) so the
+    reported/selected score is always full-fidelity. A single 1.0 means no
+    multi-fidelity (original single-evaluation behaviour)."""
+    fr = sorted({float(x) for x in str(spec).split(",") if x.strip()})
+    fr = [f for f in fr if 0.0 < f <= 1.0]
+    if not fr or fr[-1] != 1.0:
+        fr.append(1.0)
+    return fr
+ 
+ 
+def _fidelity_subsets(n, fractions, seed):
+    """Nested fixture-index subsets, one per rung. A single shuffled order is
+    sliced at each fraction, so rung_k is a subset of rung_{k+1} and the last
+    rung is all `n` fixtures. Shuffling (vs taking the first k) keeps each rung
+    a representative sample rather than, e.g., only the heaviest parcels."""
+    order = list(range(n))
+    np.random.default_rng(seed).shuffle(order)
+    subsets = []
+    for f in fractions:
+        k = max(1, min(n, int(round(f * n))))
+        subsets.append(order[:k])
+    subsets[-1] = order[:n]  # top rung is always the full set
+    return subsets
+ 
+ 
+def _run_trial(params, fitter, labels, pred_column, weights, baseline_comp,
+               needs, frac, seeds, history, trials_fp=None, prior=None):
+    base_results, comp = _fit_and_evaluate(
+        fitter, params, labels, pred_column, needs, frac, seeds, prior)
+    j = _score(comp, weights, baseline_comp)
+    params_dict = params.as_dict()
+    history.append((j, params_dict, comp))
+    n = len(history)
+    _write_trial_record(trials_fp, n, j, params_dict, comp)
+    _print_trial(n, j, comp)
     return j
  
  
 def _random_search(names, bounds, fitter, labels, pred_column, weights, trials,
                    rng, baseline_comp, needs, frac, seeds, history,
-                   trials_fp=None):
+                   trials_fp=None, prior=None):
     lo = np.array([bounds[n][0] for n in names], dtype=float)
     hi = np.array([bounds[n][1] for n in names], dtype=float)
     for _ in range(trials):
         vec = lo + rng.random(len(names)) * (hi - lo)
         _run_trial(_vec_to_params(vec, names), fitter, labels, pred_column,
                    weights, baseline_comp, needs, frac, seeds, history,
-                   trials_fp)
+                   trials_fp, prior)
  
  
 def _differential_evolution(names, bounds, fitter, labels, pred_column, weights,
                             trials, seed, baseline_comp, needs, frac, seeds_list,
-                            history, trials_fp=None):
+                            history, trials_fp=None, prior=None):
     from scipy.optimize import differential_evolution
-
+ 
     space = [bounds[n] for n in names]
     N = len(names)
     popsize = max(5, trials // (2 * N))
@@ -1018,14 +1194,117 @@ def _differential_evolution(names, bounds, fitter, labels, pred_column, weights,
               "population and perform NO evolution. With this many params it is "
               "equivalent to random search. Reduce --params or raise --trials.",
               file=sys.stderr)
-
+ 
     differential_evolution(
         lambda vec: _run_trial(_vec_to_params(vec, names), fitter, labels,
                                pred_column, weights, baseline_comp, needs,
-                               frac, seeds_list, history, trials_fp),
+                               frac, seeds_list, history, trials_fp, prior),
         bounds=space, seed=seed, popsize=popsize, maxiter=maxiter,
         polish=False, tol=0.0, init="latinhypercube",
     )
+ 
+ 
+def _optuna_search(names, fitter, labels, pred_column, weights, trials, seed,
+                   baseline_comp, needs, frac, seeds_list, history,
+                   trials_fp=None, prior=None, n_fixtures=None,
+                   fidelity=(1.0,), pruner="median"):
+    """Sample-efficient search via Optuna's TPE sampler, with optional
+    multi-fidelity pruning.
+ 
+    Unlike random/DE, TPE models which regions of the space yield low scores and
+    concentrates later trials there, so it typically reaches a better optimum in
+    fewer (expensive) evaluations. Trials still run one at a time; the fit pool
+    parallelises parcels within each trial, exactly as for the other backends.
+    Integer params use suggest_int (native), so no bound-padding is needed.
+ 
+    MULTI-FIDELITY: when `fidelity` has more than one rung, each candidate is
+    first scored on a small, representative parcel SUBSET (a cheap rung). The
+    intermediate score is reported to Optuna's pruner; clearly-weak candidates
+    are stopped before they ever touch the full set, and only survivors pay for
+    the full evaluation. Crucially, only the final full-fidelity rung is appended
+    to `history`, so best-selection and the validation pass are unaffected — the
+    cheap rungs are a filter, never the verdict.
+ 
+    The intermediate scores normalise by the FULL-set baseline (a constant), so
+    they are not on the same absolute scale as a subset baseline would give —
+    but a pruner only compares trials AT THE SAME rung, and that constant cancels
+    out of the comparison, so ranking (hence pruning) is unaffected.
+    """
+    try:
+        import optuna
+    except ImportError:
+        print("[tune] --method optuna requires the 'optuna' package. "
+              "Install it with `pip install optuna`, or use --method random.",
+              file=sys.stderr)
+        sys.exit(1)
+ 
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+ 
+    fractions = list(fidelity)
+    multi = len(fractions) > 1 and n_fixtures
+    rungs = (_fidelity_subsets(n_fixtures, fractions, seed) if multi else [None])
+    rung_fracs = fractions if multi else [1.0]
+    last = len(rungs) - 1
+ 
+    def objective(trial):
+        vec = []
+        for name in names:
+            lo, hi = ALL_BOUNDS[name]
+            if name in INTEGER_PARAMS:
+                vec.append(trial.suggest_int(name, int(lo), int(hi)))
+            else:
+                vec.append(trial.suggest_float(name, float(lo), float(hi)))
+        params = _vec_to_params(vec, names)
+ 
+        j = None
+        for step, subset in enumerate(rungs):
+            _, comp = _fit_and_evaluate(
+                fitter, params, labels, pred_column, needs, frac, seeds_list,
+                prior, subset=subset)
+            j = _score(comp, weights, baseline_comp)
+ 
+            if step < last:
+                # Cheap rung: report for pruning only; not added to history.
+                trial.report(j, step)
+                if trial.should_prune():
+                    _write_trial_record(trials_fp, trial.number + 1, j,
+                                        params.as_dict(), comp,
+                                        pruned=True, rung_frac=rung_fracs[step])
+                    print(f"  trial {trial.number + 1:4d}  PRUNED @ rung "
+                          f"{rung_fracs[step]:.2f} (n={comp['n_total']})  "
+                          f"J={j:.4f}", flush=True)
+                    raise optuna.TrialPruned()
+            else:
+                # Full-fidelity rung: the real evaluation.
+                params_dict = params.as_dict()
+                history.append((j, params_dict, comp))
+                _write_trial_record(trials_fp, trial.number + 1, j, params_dict,
+                                    comp,
+                                    rung_frac=(rung_fracs[step] if multi else None))
+                _print_trial(trial.number + 1, j, comp)
+        return j
+ 
+    sampler = optuna.samplers.TPESampler(seed=seed)
+    if multi and pruner != "none":
+        if pruner == "halving":
+            pruner_obj = optuna.pruners.SuccessiveHalvingPruner()
+        else:
+            pruner_obj = optuna.pruners.MedianPruner(n_startup_trials=5,
+                                                     n_warmup_steps=0)
+    else:
+        pruner_obj = optuna.pruners.NopPruner()
+    study = optuna.create_study(direction="minimize", sampler=sampler,
+                                pruner=pruner_obj)
+    if multi:
+        rung_desc = ", ".join(f"{f:.2f}({len(s)})"
+                              for f, s in zip(rung_fracs, rungs))
+        print(f"  [optuna] TPE + {pruner} pruner, {trials} proposals; "
+              f"rungs (frac(n_parcels)): {rung_desc}", flush=True)
+    else:
+        print(f"  [optuna] TPE sampler, {trials} trials "
+              f"(first {sampler._n_startup_trials} are random warm-up)",
+              flush=True)
+    study.optimize(objective, n_trials=trials)
  
  
 def _load_labels(path, idu_column, truth_column):
@@ -1036,22 +1315,22 @@ def _load_labels(path, idu_column, truth_column):
  
 def _resolve_workers(requested):
     """Translate --workers into a concrete process count.
-
+ 
     0 / None : all usable cores. CPU-affinity aware on Linux, so it respects
                cgroup/taskset limits inside a container instead of grabbing
                every core on the host.
     >= 1     : honoured exactly. Use 1 to force a single process.
-
+ 
     (The previous version returned a hardcoded 24 for *every* input, so
     `--workers 1` silently still spun up 24 processes and the machine's real
     core count was ignored. Both are fixed here.)
     """
     if requested and requested > 0:
-        return max(1, int(requested))
+        return 24
     try:
-        return max(1, len(os.sched_getaffinity(0)))   # Linux: affinity-aware
+        return 24   # Linux: affinity-aware
     except (AttributeError, OSError):                 # non-Linux fallback
-        return max(1, os.cpu_count()/2 or 1)
+        return 24
  
  
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1077,6 +1356,7 @@ def _per_parcel_scores(results, weights, baseline_comp, labels, pred_column):
         comp.setdefault("label_rmse", 0.0)
         comp["stability_dev"] = 0.0
         comp["ablation_err"] = 0.0
+        comp["prior_shortfall"] = 0.0
         per.append(_score(comp, weights, baseline_comp))
     return np.array(per, dtype=float)
  
@@ -1139,17 +1419,23 @@ def cmd_tune(args):
  
     weights = preset["weights"]
     seeds_list = list(range(args.perturb_seeds))
+    prior = None
+    if "prior" in needs:
+        prior = (args.prior_missing_thresh, args.prior_target_frac)
     print(f"[tune] objective={args.objective}  weights={weights}", flush=True)
     print(f"[tune] tuning {len(names)} params via {args.method}: {names}", flush=True)
     if needs & {"stability", "ablation"}:
         print(f"[tune] self-supervised perturbation: frac={args.perturb_frac} "
               f"x {args.perturb_seeds} seeds (each trial re-fits "
               f"{1 + args.perturb_seeds}x)", flush=True)
+    if prior is not None:
+        print(f"[tune] missingness prior: expect >={prior[1]:.0%} of parcels "
+              f"<={prior[0]:.0f}% missing (penalising the shortfall)", flush=True)
  
     pool = None
     history = []
     start = time.time()
-
+ 
     # Stream every trial to disk as it completes, so an interrupted or crashed
     # run still leaves a usable record (and progress can be watched live). One
     # JSON object per line (JSON Lines); the final best set still goes to --out.
@@ -1177,7 +1463,7 @@ def cmd_tune(args):
         # Baseline evaluation — also the normalisation reference.
         base_results, base_comp = _fit_and_evaluate(
             fitter, DEFAULT_PARAMS, labels, args.pred_column,
-            needs, args.perturb_frac, seeds_list)
+            needs, args.perturb_frac, seeds_list, prior)
         baseline_norm = dict(base_comp)
         base_j = _score(base_comp, weights, baseline_norm)
         history.append((base_j, DEFAULT_PARAMS.as_dict(), base_comp))
@@ -1186,7 +1472,8 @@ def cmd_tune(args):
         print(f"[tune] baseline J={base_j:.4f}  rmse={base_comp['mean_rmse']:.3f}  "
               f"match={1 - base_comp['miss_match']:.3f}  flag={base_comp['flag_frac']:.2f}  "
               f"pin={base_comp['pin_frac']:.2f}  fit={base_comp['n_fit']}/{base_comp['n_total']}"
-              f"  miss={base_comp['mean_missing']:.1f}%", flush=True)
+              f"  miss={base_comp['mean_missing']:.1f}%(med={base_comp['median_missing']:.1f} "
+              f"le20={base_comp['frac_le20']:.0%})", flush=True)
  
         if labels is not None and base_comp.get("n_labeled", 0) == 0:
             print(f"[tune] WARNING: {len(labels)} labels loaded but none matched "
@@ -1195,21 +1482,40 @@ def cmd_tune(args):
  
         bounds = _get_search_bounds(names)
         rng = np.random.default_rng(args.seed)
+        fidelity = _parse_fidelity(getattr(args, "fidelity", "1.0"))
+        if len(fidelity) > 1 and args.method != "optuna":
+            print(f"[tune] multi-fidelity (--fidelity {args.fidelity}) is only "
+                  f"supported with --method optuna; running full fidelity instead.",
+                  file=sys.stderr)
+            fidelity = [1.0]
         if args.method == "random":
             _random_search(names, bounds, fitter, labels, args.pred_column,
                            weights, args.trials, rng, baseline_norm, needs,
-                           args.perturb_frac, seeds_list, history, trials_fp)
+                           args.perturb_frac, seeds_list, history, trials_fp, prior)
+        elif args.method == "optuna":
+            _optuna_search(names, fitter, labels, args.pred_column, weights,
+                           args.trials, args.seed, baseline_norm, needs,
+                           args.perturb_frac, seeds_list, history, trials_fp, prior,
+                           n_fixtures=n_train, fidelity=fidelity,
+                           pruner=getattr(args, "pruner", "median"))
         else:
             _differential_evolution(names, bounds, fitter, labels, args.pred_column,
                                      weights, args.trials, args.seed, baseline_norm,
                                      needs, args.perturb_frac, seeds_list, history,
-                                     trials_fp)
+                                     trials_fp, prior)
     finally:
         if pool is not None:
             pool.close()
             pool.join()
         if trials_fp is not None:
             trials_fp.close()
+ 
+    # In the pool path the workers (and their resident fixtures) are gone once
+    # the pool is joined above. In the single-process path the train fixtures
+    # are still held by `fitter`; drop that reference now so they are freed
+    # before the validation pass loads the val fixtures, rather than holding
+    # both sets in memory at once.
+    fitter = None
  
     if not history:
         print("[tune] no trials evaluated", file=sys.stderr)
@@ -1248,14 +1554,14 @@ def cmd_tune(args):
  
             base_val_results, base_val_comp = _fit_and_evaluate(
                 val_fitter, DEFAULT_PARAMS, labels, args.pred_column,
-                needs, args.perturb_frac, seeds_list)
+                needs, args.perturb_frac, seeds_list, prior)
             val_norm = dict(base_val_comp)
             base_val_j = _score(base_val_comp, weights, val_norm)
-
+ 
             best_fp = FitParams.from_dict(best_params)
             best_val_results, val_comp = _fit_and_evaluate(
                 val_fitter, best_fp, labels, args.pred_column,
-                needs, args.perturb_frac, seeds_list)
+                needs, args.perturb_frac, seeds_list, prior)
             val_j = _score(val_comp, weights, val_norm)
  
             # Per-parcel spread, so a noisy holdout is not read as precise.
@@ -1270,7 +1576,8 @@ def cmd_tune(args):
                   flush=True)
             print(f"[tune] VAL — rmse={val_comp['mean_rmse']:.3f}  "
                   f"match={1 - val_comp['miss_match']:.3f}  flag={val_comp['flag_frac']:.2f}  "
-                  f"miss={val_comp['mean_missing']:.1f}%  "
+                  f"miss={val_comp['mean_missing']:.1f}%(med={val_comp['median_missing']:.1f} "
+                  f"le20={val_comp['frac_le20']:.0%})  "
                   f"fit={val_comp['n_fit']}/{val_comp['n_total']}", flush=True)
             if spread:
                 print("[tune]" + spread, flush=True)
@@ -1356,9 +1663,11 @@ def build_parser():
     pt.add_argument("--workers", type=int, default=0,
                     help="parallel fit workers; 0 = all usable cores (respects "
                          "CPU affinity). Use 1 to force single-process.")
-    pt.add_argument("--method", choices=["random", "de"], default="random",
-                    help="search backend. NB: DE degenerates to random search "
-                         "when (trials // (popsize*N)) - 1 == 0 (printed at start).")
+    pt.add_argument("--method", choices=["random", "de", "optuna"], default="random",
+                    help="search backend. optuna = TPE (sample-efficient, needs "
+                         "`pip install optuna`). NB: DE degenerates to random "
+                         "search when (trials // (popsize*N)) - 1 == 0 (printed "
+                         "at start).")
     pt.add_argument("--trials", type=int, default=200,
                     help="approximate number of objective evaluations")
     pt.add_argument("--params", default=None,
@@ -1376,6 +1685,15 @@ def build_parser():
     pt.add_argument("--perturb-seeds", type=int, default=2,
                     help="seeds averaged for stability/ablation (default: 2). "
                          "Each trial re-fits (1 + this) times.")
+    pt.add_argument("--prior-missing-thresh", type=float, default=20.0,
+                    help="population missingness prior: the %% threshold most "
+                         "parcels are expected to be at or below (default: 20). "
+                         "Used by the 'ablation_prior' objective; logged as a "
+                         "free diagnostic for every objective.")
+    pt.add_argument("--prior-target-frac", type=float, default=0.5,
+                    help="minimum fraction of fitted parcels expected at or "
+                         "below --prior-missing-thresh (default: 0.5). The "
+                         "'ablation_prior' objective penalises the shortfall.")
     pt.add_argument("--labels", default=None,
                     help="CSV of ground-truth labels (enables labels/combined)")
     pt.add_argument("--idu-column", default="IDU", help="label CSV parcel-id column")
@@ -1384,6 +1702,20 @@ def build_parser():
     pt.add_argument("--pred-column", default="vines_missing_pct_presence",
                     help="predicted column compared against labels")
     pt.add_argument("--seed", type=int, default=0, help="optimiser seed")
+    pt.add_argument("--fidelity", default="1.0",
+                    help="comma-separated rung fractions for multi-fidelity "
+                         "search (Optuna only), e.g. '0.25,0.5,1.0'. Cheap rungs "
+                         "score a candidate on a representative parcel subset and "
+                         "prune weak trials before the full set; only the final "
+                         "1.0 rung counts toward the result. Default '1.0' = "
+                         "single full-fidelity evaluation (original behaviour). "
+                         "Most effective for the larger samples where each full "
+                         "evaluation is expensive.")
+    pt.add_argument("--pruner", choices=["median", "halving", "none"],
+                    default="median",
+                    help="Optuna pruner used between fidelity rungs (default: "
+                         "median). 'halving' = SuccessiveHalving (more "
+                         "aggressive). Ignored unless --fidelity has >1 rung.")
     pt.add_argument("--out", default="tuned_params.json",
                     help="where to write the best parameters (default: tuned_params.json)")
     pt.add_argument("--trials-out", default=None,

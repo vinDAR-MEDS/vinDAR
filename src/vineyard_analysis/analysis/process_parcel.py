@@ -121,7 +121,7 @@ def prepare_parcel_points(index, parcels, zones, use_cache=None):
     las = las.rename(columns={"X": "x", "Y": "y", "Z": "z"})
     mask = shapely.contains_xy(sel_geometry, las.x, las.y)
     las_clip = las[mask]
-    las_clip = las_clip[las_clip.Classification.isin([3, 4])]
+    las_clip = las_clip[las_clip.Classification.isin([1, 3, 4])]
 
     return PreparedParcel(idu, plot, las_clip, log)
 
@@ -159,6 +159,10 @@ def fit_parcel(prepared: PreparedParcel, params: FitParams = None):
                              params.orientation_radius_floor)
     orientation_centroids = cluster_points(
         las_clip, spacing=orientation_radius, min_points=params.orientation_min_points,
+        top_fraction=params.cluster_top_fraction,
+        min_top_points=params.cluster_min_top_points,
+        min_z_range=params.cluster_min_z_range,
+        centre_band=(params.cluster_centre_lo, params.cluster_centre_hi),
     )
     orientation_df = pd.DataFrame(orientation_centroids, columns=["x", "y", "z"])
 
@@ -182,6 +186,10 @@ def fit_parcel(prepared: PreparedParcel, params: FitParams = None):
     cluster_radius = max(plant_min / params.scoring_radius_div, params.scoring_radius_floor)
     scoring_centroids = cluster_points(
         las_clip, spacing=cluster_radius, min_points=params.scoring_min_points,
+        top_fraction=params.cluster_top_fraction,
+        min_top_points=params.cluster_min_top_points,
+        min_z_range=params.cluster_min_z_range,
+        centre_band=(params.cluster_centre_lo, params.cluster_centre_hi),
     )
     centroids_df = pd.DataFrame(scoring_centroids, columns=["x", "y", "z"])
 

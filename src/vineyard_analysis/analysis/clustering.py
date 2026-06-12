@@ -1,4 +1,3 @@
-
 import numpy as np
 import open3d as o3d
  
@@ -7,9 +6,9 @@ def cluster_points(
     data,
     eps=0.20,
     min_points=3,
-    top_fraction=0.75,
+    top_fraction=0.50,
     min_top_points=2,
-    min_z_range=0.1,
+    min_z_range=0.05,
     centre_band=(0.0, 1.0),
     voxel_size=None,
     spacing=None,
